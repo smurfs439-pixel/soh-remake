@@ -1,0 +1,115 @@
+name: Build Ship of Harkinian (Remake Mod)
+
+on:
+  workflow_dispatch:   # botão "Run workflow" na aba Actions
+  push:
+    branches: [main, master]
+
+env:
+  UPSTREAM_REPO: https://github.com/HarbourMasters/Shipwright.git
+  UPSTREAM_TAG: "9.3.1"
+
+jobs:
+  generate-soh-otr:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout this repo (patch)
+        uses: actions/checkout@v7
+        with:
+          path: mod
+
+      - name: Clone Ship of Harkinian ${{ env.UPSTREAM_TAG }} (with submodules)
+        run: |
+          git clone --branch "$UPSTREAM_TAG" "$UPSTREAM_REPO" src || git clone --branch "v$UPSTREAM_TAG" "$UPSTREAM_REPO" src
+          cd src
+          git submodule update --init --recursive
+
+      - name: Apply remake patch
+        working-directory: src
+        run: |
+          git apply --check -p1 ../mod/remake.patch
+          git apply -p1 ../mod/remake.patch
+
+      - name: Install dependencies
+        working-directory: src
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat linux-build-deps/apt.txt)
+
+      - name: Generate soh.o2r
+        working-directory: src
+        run: |
+          cmake --no-warn-unused-cli -H. -Bbuild-cmake -GNinja -DCMAKE_BUILD_TYPE:STRING=Release -DSOH_TOOLS_ONLY=ON
+          cmake --build build-cmake --config Release --target GenerateSohOtr -j4
+
+      - name: Upload soh.o2r
+        uses: actions/upload-artifact@v7
+        with:
+          name: soh.o2r
+          path: src/soh.o2r
+          retention-days: 3
+
+  build-windows:
+    needs: generate-soh-otr
+    runs-on: windows-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          choco install ninja -y
+          Remove-Item -Path "C:\ProgramData\Chocolatey\bin\ccache.exe" -Force -ErrorAction SilentlyContinue
+
+      - name: Checkout this repo (patch)
+        uses: actions/checkout@v7
+        with:
+          path: mod
+
+      - name: Clone Ship of Harkinian ${{ env.UPSTREAM_TAG }} (with submodules)
+        shell: bash
+        run: |
+          git clone --branch "$UPSTREAM_TAG" "$UPSTREAM_REPO" src || git clone --branch "v$UPSTREAM_TAG" "$UPSTREAM_REPO" src
+          cd src
+          git submodule update --init --recursive
+
+      - name: Apply remake patch
+        shell: bash
+        working-directory: src
+        run: |
+          git apply --check -p1 ../mod/remake.patch
+          git apply -p1 ../mod/remake.patch
+
+      - name: Configure Developer Command Prompt
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - name: Download soh.o2r
+        uses: actions/download-artifact@v8
+        with:
+          name: soh.o2r
+          path: src/build-windows/soh
+
+      - name: Build SoH
+        working-directory: src
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/src/vcpkg
+        run: |
+          $env:PATH = "$env:USERPROFILE/.cargo/bin;$env:PATH"
+          cmake -S . -B build-windows -G Ninja -DCMAKE_MAKE_PROGRAM=ninja -DCMAKE_BUILD_TYPE:STRING=Release
+          cmake --build build-windows --config Release --parallel 4
+          Push-Location build-windows
+          cpack
+          Pop-Location
+
+      - name: Collect package
+        working-directory: src
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path _packages, build-windows -Recurse -Filter *.zip -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $zip) { throw "Nenhum .zip gerado pelo cpack" }
+          Expand-Archive -Path $zip.FullName -DestinationPath ../soh-windows
+
+      - name: Upload build
+        uses: actions/upload-artifact@v7
+        with:
+          name: soh-windows
+          path: soh-windows
