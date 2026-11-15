@@ -27,8 +27,8 @@ jobs:
       - name: Apply remake patch
         working-directory: src
         run: |
-          git apply --check -p1 ../mod/remake.patch
-          git apply -p1 ../mod/remake.patch
+          git apply --check --ignore-whitespace -p1 ../mod/remake.patch
+          git apply --ignore-whitespace -p1 ../mod/remake.patch
 
       - name: Install dependencies
         working-directory: src
@@ -53,6 +53,10 @@ jobs:
     needs: generate-soh-otr
     runs-on: windows-latest
     steps:
+      - name: Disable line-ending conversion (Windows)
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - name: Install dependencies
         run: |
           choco install ninja -y
@@ -74,8 +78,8 @@ jobs:
         shell: bash
         working-directory: src
         run: |
-          git apply --check -p1 ../mod/remake.patch
-          git apply -p1 ../mod/remake.patch
+          git apply --check --ignore-whitespace -p1 ../mod/remake.patch
+          git apply --ignore-whitespace -p1 ../mod/remake.patch
 
       - name: Configure Developer Command Prompt
         uses: TheMrMilchmann/setup-msvc-dev@v4
