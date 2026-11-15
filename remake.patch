@@ -1,0 +1,223 @@
+diff -ruN a/soh/soh/Enhancements/Remake/RemakeFeatures.cpp b/soh/soh/Enhancements/Remake/RemakeFeatures.cpp
+--- a/soh/soh/Enhancements/Remake/RemakeFeatures.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/soh/soh/Enhancements/Remake/RemakeFeatures.cpp	2026-11-15 17:44:41.721711892 +0000
+@@ -0,0 +1,79 @@
++// Features inspired by the "Ocarina of Time" remake (Switch 2), implemented on top of Ship of Harkinian.
++//
++//  - Manual jump button            (CVar: Remake.ManualJump / Remake.ManualJump.Btn)
++//  - Starting wallet of 200 rupees (CVar: Remake.Wallet200)
++//
++// Din's Fire in real time (Remake.RealTimeDinsFire), free diving (Remake.FreeDive) and the 3-digit
++// rupee counter live directly in z_player.c / z_parameter.c because they patch vanilla code paths.
++#include <libultraship/bridge/consolevariablebridge.h>
++
++#include "soh/Enhancements/game-interactor/GameInteractor.h"
++#include "soh/OTRGlobals.h"
++#include "soh/ShipInit.hpp"
++#include "soh/cvar_prefixes.h"
++
++extern "C" {
++#include "z64.h"
++#include "macros.h"
++#include "variables.h"
++extern PlayState* gPlayState;
++extern SaveContext gSaveContext;
++}
++
++#define CVAR_REMAKE_JUMP_NAME CVAR_ENHANCEMENT("Remake.ManualJump")
++#define CVAR_REMAKE_JUMP_BTN_NAME CVAR_ENHANCEMENT("Remake.ManualJump.Btn")
++#define CVAR_REMAKE_WALLET_NAME CVAR_ENHANCEMENT("Remake.Wallet200")
++
++static constexpr float kManualJumpVelocity = 7.0f;
++
++static constexpr uint32_t kJumpBlockedState1 =
++    PLAYER_STATE1_DEAD | PLAYER_STATE1_TALKING | PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_CARRYING_ACTOR |
++    PLAYER_STATE1_HANGING_OFF_LEDGE | PLAYER_STATE1_CLIMBING_LEDGE | PLAYER_STATE1_CLIMBING_LADDER |
++    PLAYER_STATE1_FIRST_PERSON | PLAYER_STATE1_ON_HORSE | PLAYER_STATE1_IN_WATER | PLAYER_STATE1_IN_ITEM_CS |
++    PLAYER_STATE1_IN_CUTSCENE | PLAYER_STATE1_INPUT_DISABLED | PLAYER_STATE1_DAMAGED | PLAYER_STATE1_JUMPING |
++    PLAYER_STATE1_FREEFALL | PLAYER_STATE1_FLOOR_DISABLED | PLAYER_STATE1_HOOKSHOT_FALLING |
++    PLAYER_STATE1_SHIELDING | PLAYER_STATE1_CHARGING_SPIN_ATTACK;
++
++static constexpr uint32_t kJumpBlockedState2 =
++    PLAYER_STATE2_CRAWLING | PLAYER_STATE2_OCARINA_PLAYING | PLAYER_STATE2_UNDERWATER | PLAYER_STATE2_DIVING;
++
++static void OnPlayerUpdateManualJump() {
++    if (gPlayState == nullptr || gSaveContext.gameMode != GAMEMODE_NORMAL) {
++        return;
++    }
++
++    Player* player = GET_PLAYER(gPlayState);
++    if (player == nullptr) {
++        return;
++    }
++
++    // Don't jump while paused, in a text box, or changing screens
++    if (gPlayState->pauseCtx.state != 0 || gPlayState->msgCtx.msgMode != 0 || gPlayState->transitionMode != 0) {
++        return;
++    }
++
++    const uint32_t mask = CVarGetInteger(CVAR_REMAKE_JUMP_BTN_NAME, BTN_CUSTOM_MODIFIER2);
++    if (mask == 0 || !CHECK_BTN_ALL(gPlayState->state.input[0].press.button, mask)) {
++        return;
++    }
++
++    if (!(player->actor.bgCheckFlags & BGCHECKFLAG_GROUND) || (player->stateFlags1 & kJumpBlockedState1) ||
++        (player->stateFlags2 & kJumpBlockedState2) || (player->stateFlags3 & PLAYER_STATE3_MIDAIR)) {
++        return;
++    }
++
++    player->actor.velocity.y = kManualJumpVelocity;
++    player->actor.bgCheckFlags &= ~BGCHECKFLAG_GROUND;
++}
++
++static void RegisterManualJump() {
++    COND_HOOK(OnPlayerUpdate, CVarGetInteger(CVAR_REMAKE_JUMP_NAME, 0), OnPlayerUpdateManualJump);
++}
++
++static void RegisterWallet200() {
++    // Index 4 = wallets; level 0 is the starting wallet (vanilla: 99 rupees, remake: 200)
++    gUpgradeCapacities[UPG_WALLET][0] = CVarGetInteger(CVAR_REMAKE_WALLET_NAME, 0) ? 200 : 99;
++}
++
++static RegisterShipInitFunc manualJumpInit(RegisterManualJump, { CVAR_REMAKE_JUMP_NAME });
++static RegisterShipInitFunc wallet200Init(RegisterWallet200, { CVAR_REMAKE_WALLET_NAME });
+diff -ruN a/soh/soh/SohGui/SohMenuEnhancements.cpp b/soh/soh/SohGui/SohMenuEnhancements.cpp
+--- a/soh/soh/SohGui/SohMenuEnhancements.cpp	2026-11-15 00:58:09.451406662 +0000
++++ b/soh/soh/SohGui/SohMenuEnhancements.cpp	2026-11-15 17:44:41.746960386 +0000
+@@ -424,6 +424,63 @@
+         })
+         .Options(CheckboxOptions().Tooltip("Allow Link to enter Jabu-Jabu without feeding him a fish."));
+ 
++    // Remake Features (Ocarina of Time remake)
++    path.sidebarName = "Remake";
++    AddSidebarEntry("Enhancements", path.sidebarName, 3);
++    path.column = SECTION_COLUMN_1;
++
++    AddWidget(path, "Movement", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Manual Jump", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("Remake.ManualJump"))
++        .Options(CheckboxOptions().Tooltip("Adds a dedicated jump button, like the remake. Works while on the ground "
++                                           "and outside of cutscenes, text boxes and water."));
++    AddWidget(path, "Jump Button:", WIDGET_CVAR_BTN_SELECTOR)
++        .CVar(CVAR_ENHANCEMENT("Remake.ManualJump.Btn"))
++        .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger(CVAR_ENHANCEMENT("Remake.ManualJump"), 0); })
++        .Options(BtnSelectorOptions().DefaultValue(BTN_CUSTOM_MODIFIER2).Tooltip("Default is Modifier 2 (M2). Map it "
++                                                                                 "to a button in the Input Editor."));
++    AddWidget(path, "Classic Jump (automatic ledge jump)", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("Remake.ClassicJump"))
++        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
++            "On: Link jumps automatically when running off a ledge, like the original game. Off: he just falls, "
++            "and you jump with the Manual Jump button, like in the remake."));
++    AddWidget(path, "Free Diving", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("Remake.FreeDive"))
++        .Options(CheckboxOptions().Tooltip("Link can dive to the maximum depth without needing the Zora Scales."));
++
++    AddWidget(path, "Combat and Items", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Real-Time Din's Fire", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("Remake.RealTimeDinsFire"))
++        .Options(CheckboxOptions().Tooltip("Din's Fire no longer freezes the world around Link while it is cast."));
++    AddWidget(path, "Starting Wallet of 200 Rupees", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("Remake.Wallet200"))
++        .Options(CheckboxOptions().Tooltip("The first wallet holds 200 rupees instead of 99."));
++
++    AddWidget(path, "Preset", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Enable All Remake Features", WIDGET_BUTTON)
++        .Options(ButtonOptions().Size(Sizes::Inline).Tooltip(
++            "Turns on the options above and the existing Ship options closest to the remake: Free Look camera, "
++            "faster ocarina playback, quick put away, hookshot target reticle, improved roll, D-Pad equips, "
++            "assignable tunics/boots, and a 150% speed modifier (Dash) held with Modifier 1."))
++        .Callback([](WidgetInfo& info) {
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("Remake.ManualJump"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("Remake.FreeDive"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("Remake.RealTimeDinsFire"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("Remake.Wallet200"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_SETTING("FreeLook.Enabled"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("FastOcarinaPlayback"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("QuickPutaway"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("HookshotableReticle"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("ImprovedRoll"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("DpadEquips"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("AssignableTunicsAndBoots"), 1);
++            CVAR_INT_SHIP_INIT(CVAR_ENHANCEMENT("SkipSwimDeepEndAnim"), 1);
++            CVarSetFloat(CVAR_CHEAT("SpeedModifier.Value"), 1.5f);
++            CVarSetInteger(CVAR_CHEAT("SpeedModifier.DoesntChangeJump"), 1);
++
++            Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
++        });
++
+     // Skips & Speed-ups
+     path.sidebarName = "Skips & Speed-ups";
+     AddSidebarEntry("Enhancements", path.sidebarName, 3);
+diff -ruN a/soh/src/code/z_parameter.c b/soh/src/code/z_parameter.c
+--- a/soh/src/code/z_parameter.c	2026-11-15 00:58:09.604502446 +0000
++++ b/soh/src/code/z_parameter.c	2026-11-15 17:44:41.849891769 +0000
+@@ -5388,8 +5388,14 @@
+                     interfaceCtx->counterDigits[2] -= 10;
+                 }
+ 
+-                svar2 = rupeeDigitsFirst[CUR_UPG_VALUE(UPG_WALLET)];
+-                svar5 = rupeeDigitsCount[CUR_UPG_VALUE(UPG_WALLET)];
++                if (CVarGetInteger(CVAR_ENHANCEMENT("Remake.Wallet200"), 0)) {
++                    // Remake: the starting wallet holds 200 rupees, so always draw 3 digits
++                    svar2 = 0;
++                    svar5 = 3;
++                } else {
++                    svar2 = rupeeDigitsFirst[CUR_UPG_VALUE(UPG_WALLET)];
++                    svar5 = rupeeDigitsCount[CUR_UPG_VALUE(UPG_WALLET)];
++                }
+ 
+                 for (svar1 = 0, svar3 = 16; svar1 < svar5; svar1++, svar2++, svar3 += 8) {
+                     OVERLAY_DISP = Gfx_TextureI8(OVERLAY_DISP, ((u8*)digitTextures[interfaceCtx->counterDigits[svar2]]),
+diff -ruN a/soh/src/overlays/actors/ovl_player_actor/z_player.c b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+--- a/soh/src/overlays/actors/ovl_player_actor/z_player.c	2026-11-15 00:58:10.030022631 +0000
++++ b/soh/src/overlays/actors/ovl_player_actor/z_player.c	2026-11-15 17:44:42.265711925 +0000
+@@ -5804,7 +5804,9 @@
+ 
+                 this->floorSfxOffset = this->prevFloorSfxOffset;
+ 
+-                if ((this->actor.bgCheckFlags & BGCHECKFLAG_GROUND_LEAVE) &&
++                // Remake: the classic automatic ledge jump can be turned off (use the manual jump instead)
++                if (CVarGetInteger(CVAR_ENHANCEMENT("Remake.ClassicJump"), 1) &&
++                    (this->actor.bgCheckFlags & BGCHECKFLAG_GROUND_LEAVE) &&
+                     !(this->stateFlags1 & PLAYER_STATE1_IN_WATER) && (sPrevFloorProperty != FLOOR_PROPERTY_6) &&
+                     (sPrevFloorProperty != FLOOR_PROPERTY_9) && (sYDistToFloor > 20.0f) &&
+                     (this->meleeWeaponState == 0) && (ABS(sp5C) < 0x2000) && (this->linearVelocity > 3.0f)) {
+@@ -10965,6 +10967,8 @@
+ }
+ 
+ static f32 D_80854784[] = { 120.0f, 240.0f, 360.0f };
++// Remake: Link can dive freely, as if he always had the best scale
++#define PLAYER_DIVE_SCALE_VALUE() (CVarGetInteger(CVAR_ENHANCEMENT("Remake.FreeDive"), 0) ? 2 : CUR_UPG_VALUE(UPG_SCALE))
+ 
+ /**
+  * Updates the two main interface elements that player is responsible for:
+@@ -11048,7 +11052,7 @@
+                     static u8 sDiveNumberDoActions[] = { DO_ACTION_1, DO_ACTION_2, DO_ACTION_3, DO_ACTION_4,
+                                                          DO_ACTION_5, DO_ACTION_6, DO_ACTION_7, DO_ACTION_8 };
+ 
+-                    sp24 = (D_80854784[CUR_UPG_VALUE(UPG_SCALE)] - this->actor.yDistToWater) / 40.0f;
++                    sp24 = (D_80854784[PLAYER_DIVE_SCALE_VALUE()] - this->actor.yDistToWater) / 40.0f;
+                     sp24 = CLAMP(sp24, 0, 7);
+                     doAction = sDiveNumberDoActions[sp24];
+                 } else if (sp1C && !(this->stateFlags2 & PLAYER_STATE2_UNDERWATER)) {
+@@ -13934,7 +13938,7 @@
+ 
+             if (CHECK_BTN_ALL(sControlInput->cur.button, BTN_A) && !Player_ActionHandler_2(this, play) &&
+                 !(this->actor.bgCheckFlags & BGCHECKFLAG_GROUND) &&
+-                (this->actor.yDistToWater < D_80854784[CUR_UPG_VALUE(UPG_SCALE)])) {
++                (this->actor.yDistToWater < D_80854784[PLAYER_DIVE_SCALE_VALUE()])) {
+                 func_8084DBC4(play, this, -2.0f);
+             } else {
+                 this->av1.actionVar1++;
+@@ -15220,7 +15224,10 @@
+                                                0.83f * (isFastFarores ? 2 : 1));
+ 
+                 if (Player_SpawnMagicSpell(play, this, this->av1.actionVar1) != NULL) {
+-                    this->stateFlags1 |= PLAYER_STATE1_IN_ITEM_CS | PLAYER_STATE1_IN_CUTSCENE;
++                    // Remake: Din's Fire (actionVar1 == 2) happens in real time, without freezing the world
++                    if (!(this->av1.actionVar1 == 2 && CVarGetInteger(CVAR_ENHANCEMENT("Remake.RealTimeDinsFire"), 0))) {
++                        this->stateFlags1 |= PLAYER_STATE1_IN_ITEM_CS | PLAYER_STATE1_IN_CUTSCENE;
++                    }
+                     if ((this->av1.actionVar1 != 0) || (gSaveContext.respawn[RESPAWN_MODE_TOP].data <= 0)) {
+                         gSaveContext.magicState = MAGIC_STATE_CONSUME_SETUP;
+                     }
